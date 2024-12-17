@@ -1,5 +1,4 @@
 import os
-import socket
 import subprocess
 import sys
 import requests
@@ -12,15 +11,16 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 def print_help():
     """Prints usage instructions."""
     print("""
-Usage: python3 script.py ip.txt vhost.txt
+Usage: python3 vhostfather.py ip.txt vhost.txt [--offline]
 
 Parameters:
-    ip.txt      - File containing a list of IP addresses, one per line
-    vhost.txt   - File containing a list of virtual hosts, one per line
+    ip.txt       - File containing a list of IP addresses, one per line (or ip:port pairs if --offline is specified)
+    vhost.txt    - File containing a list of virtual hosts, one per line
+    --offline    - Optional flag to use a pre-scanned list of ip:port pairs from ip.txt
 
 Description:
     This script performs the following steps:
-    1. Scans all IPs and ports (1-65535) from ip.txt using masscan with a rate of 50000.
+    1. Scans all IPs and ports (1-65535) from ip.txt using masscan with a rate of 50,000 packets/second if --offline is not specified.
     2. Checks which IP:port combinations are available for HTTP/HTTPS.
     3. Makes GET requests to each IP and checks if different VHosts return different content sizes.
     4. Outputs only when the VHost response size differs from the base IP response size.
@@ -50,18 +50,35 @@ def parse_masscan_output(file):
         for line in f:
             if line.startswith('open'):
                 parts = line.split()
-                ip = parts[3]
-                port = parts[2]
-                results.append(f"{ip}:{port}")
+                if len(parts) >= 4:
+                    ip = parts[3]
+                    port = parts[2]
+                    results.append(f"{ip}:{port}")
     return results
 
-def check_port(ip, port):
-    """Checks if a given port is open on an IP address with a 3-second timeout."""
+def check_http_https(ip, port):
+    """Checks if a given port on the IP returns a valid HTTP/HTTPS response."""
+    # First, check HTTPS
+    print(f"[*] Checking HTTPS on {ip}:{port}")
+    url_https = f"https://{ip}:{port}"
     try:
-        with socket.create_connection((ip, port), timeout=3):
-            return True
-    except socket.error:
-        return False
+        response = requests.get(url_https, timeout=5, verify=False)
+        print(f"[+] HTTPS check on {ip}:{port} returned status code: {response.status_code}")
+        return "https"
+    except RequestException:
+        pass  # Do not print error message
+
+    # Then, check HTTP
+    print(f"[*] Checking HTTP on {ip}:{port}")
+    url_http = f"http://{ip}:{port}"
+    try:
+        response = requests.get(url_http, timeout=5, verify=False)
+        print(f"[+] HTTP check on {ip}:{port} returned status code: {response.status_code}")
+        return "http"
+    except RequestException:
+        pass  # Do not print error message
+
+    return None
 
 def get_vhosts(vhost_file):
     """Reads VHosts from a file and returns them as a list."""
@@ -73,60 +90,71 @@ def get_page_size(url, host=None):
     headers = {}
     if host:
         headers['Host'] = host
-    
+
     try:
         response = requests.get(url, headers=headers, timeout=5, verify=False)
         return len(response.content)
     except RequestException:
         return None
 
-def main(ip_file, vhost_file):
+def main(ip_file, vhost_file, offline):
     masscan_output = 'masscan_output.txt'
     ip_port_file = 'ip_tmp.txt'
 
-    # Step 1: Run masscan to scan all ports on all IPs
-    if not run_masscan(ip_file, masscan_output):
-        print("[-] Error during masscan scanning.")
-        return
+    # Step 1: If offline mode, use ip_file directly as the list of ip:port pairs
+    if offline:
+        print(f"[*] Using {ip_file} as a list of IP:port pairs in offline mode.")
+        # Check if the file exists and contains ip:port pairs
+        if not os.path.exists(ip_file):
+            print(f"[-] Error: {ip_file} does not exist or is not a valid file.")
+            sys.exit(1)
+        with open(ip_file, 'r') as f:
+            pairs = [line.strip() for line in f if line.strip()]
+        if not pairs:
+            print(f"[-] Error: {ip_file} is empty or does not contain valid IP:port pairs.")
+            sys.exit(1)
+    else:
+        # Step 2: Run masscan to scan all ports
+        if not run_masscan(ip_file, masscan_output):
+            print("[-] Error during masscan scanning.")
+            return
 
-    # Step 2: Parse masscan results
-    pairs = parse_masscan_output(masscan_output)
-    with open(ip_port_file, 'w') as f:
-        for pair in pairs:
-            f.write(pair + '\n')
+        # Step 3: Parse masscan results
+        pairs = parse_masscan_output(masscan_output)
+        with open(ip_port_file, 'w') as f:
+            for pair in pairs:
+                f.write(pair + '\n')
 
-    print(f"[+] Scan completed. Found {len(pairs)} open ports.")
-    
-    # Step 3: Read VHosts from file
+        print(f"[+] Scan completed. Found {len(pairs)} open ports.")
+
+    # Step 4: Read VHosts from file
     vhosts = get_vhosts(vhost_file)
 
-    # Step 4: Read IP:port pairs from ip_tmp.txt
-    with open(ip_port_file, 'r') as ip_port_file:
-        ip_port_list = [line.strip() for line in ip_port_file if line.strip()]
+    # Step 5: Check each IP:port pair for HTTP/HTTPS availability
+    for entry in pairs:
+        if ':' not in entry:
+            print(f"[-] Invalid IP:port entry: {entry}")
+            continue
+        ip, port_str = entry.split(':', 1)
+        try:
+            port = int(port_str)
+        except ValueError:
+            print(f"[-] Invalid port number: {port_str} for IP: {ip}")
+            continue
 
-    # Step 5: Check for HTTP/HTTPS availability and perform requests
-    for entry in ip_port_list:
-        ip, port = entry.split(':')
-        port = int(port)
-        protocol = None
-        
-        # Check for HTTPS first, then HTTP
-        if port == 443 or (port != 80 and check_port(ip, 443)):
-            protocol = 'https'
-        elif port == 80 or check_port(ip, 80):
-            protocol = 'http'
-        
+        # Check HTTP/HTTPS availability
+        protocol = check_http_https(ip, port)
         if not protocol:
             continue
-        
+
         url = f"{protocol}://{ip}:{port}"
-        
+
         # Get base page size without Host header
         base_size = get_page_size(url)
-        
         if base_size is None:
+            print(f"[-] Failed to get page size for {url}")
             continue
-        
+
         print(f"[+] Page size for {url} without VHost: {base_size} bytes")
 
         # Check sizes for each VHost
@@ -143,14 +171,15 @@ def main(ip_file, vhost_file):
 
 if __name__ == "__main__":
     # Check for correct usage
-    if len(sys.argv) != 3:
+    if len(sys.argv) < 3:
         print_help()
-    
+
     ip_file = sys.argv[1]
     vhost_file = sys.argv[2]
+    offline = '--offline' in sys.argv
 
     if not os.path.exists(ip_file) or not os.path.exists(vhost_file):
         print("[-] Error: One or both input files do not exist.")
         sys.exit(1)
-    
-    main(ip_file, vhost_file)
+
+    main(ip_file, vhost_file, offline)
