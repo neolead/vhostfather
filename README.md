@@ -11,13 +11,16 @@ VHostFather: **“I'm your father... of VHost enumeration!”** 👾
 ---
 
 ## 📋 Features
+
 - ⚡ **High-Speed Port Scanning** using `masscan` (rate of 50,000 packets/second).
-- 🌐 **HTTP/HTTPS Detection** with a 3-second timeout for service availability.
+- 🌐 **HTTP/HTTPS Detection** on **any port** with a 3-second timeout for service availability.
 - 🛠️ **VHost Enumeration** to detect differences in web responses between IP and VHost requests.
 - 🚀 **Optimized Output**:
   - Displays only VHost responses that differ in size from the IP response.
   - Automatically handles SSL certificate warnings.
 - 🖥️ **Cross-Platform** and lightweight — works on Linux, macOS, and Windows.
+- 📴 **Offline Mode**:
+  - Use pre-scanned `ip:port` pairs without running `masscan`.
 
 ---
 
@@ -42,6 +45,12 @@ sudo apt install masscan
 ```
 
 ---
+📈 Changelog
+[1.1.0] - 2024-12-18
+Added: --offline flag to use pre-scanned ip:port pairs.
+Improved: HTTP/HTTPS detection logic to check services on any port, preferring HTTPS over HTTP.
+Removed: Error messages for failed HTTP/HTTPS requests to clean up output.
+Updated: Documentation to reflect new features and changes.
 
 ## 🚀 Usage
 
